@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const backendUrl = 'http://127.0.0.1:8000';
+const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
 
 // Helper to format jobs from backend
 function formatGigs(jobsData: any[], query: string) {
@@ -75,6 +75,17 @@ export async function GET(request: Request) {
 
   } catch (error) {
     console.error("Search error:", error);
+    
+    // If backend is unavailable, return helpful message
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed')) {
+      return NextResponse.json({ 
+        gigs: [],
+        error: "Backend service unavailable. The scraping backend needs to be running to fetch gigs.",
+        backendRequired: true
+      });
+    }
+    
     return NextResponse.json({ error: "Failed to fetch gigs from backend" }, { status: 500 });
   }
 }
