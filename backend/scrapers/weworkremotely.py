@@ -1,69 +1,67 @@
-import asyncio
-from playwright.async_api import async_playwright
+import httpx
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 async def scrape_weworkremotely(query: str):
+    """Scrape WeWorkRemotely using HTTP requests (no browser needed)"""
     print(f"[WWR] 🚀 Starting scrape for: '{query}'")
     jobs = []
     
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        
-        url = f"https://weworkremotely.com/remote-jobs/search?term={query}"
-        print(f"[WWR] Navigating to: {url}")
-        
-        try:
-            await page.goto(url, timeout=30000)
+    url = f"https://weworkremotely.com/remote-jobs/search?term={query}"
+    print(f"[WWR] Fetching: {url}")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=headers, follow_redirects=True)
             
-            # Selector update: WWR sometimes puts results in 'div.jobs-container section.jobs article ul li'
-            # Let's try a more generic selector for the 'li' items
-            
-            try:
-                await page.wait_for_selector('section.jobs', timeout=10000)
-            except:
-                print("[WWR] No jobs section found. Check if page loaded correctly.")
-                # Debug: print title
-                print(f"[WWR] Page Title: {await page.title()}")
+            if response.status_code != 200:
+                print(f"[WWR] ⚠️ Got status {response.status_code}")
                 return []
-
-            # Get all LI elements that look like jobs
-            # They have class 'feature' or just generic LI inside the ULs
-            cards = await page.locator('section.jobs article ul li').all()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Find job listings
+            cards = soup.select('section.jobs article ul li')
             print(f"[WWR] Found {len(cards)} potential cards")
             
             for card in cards:
                 try:
-                    # Ignore "view all" buttons or ads
-                    if await card.locator('span.view-all').count() > 0: continue
+                    # Skip view-all buttons
+                    if card.select_one('span.view-all'):
+                        continue
                     
-                    # Link is usually direct child 'a' or inside
-                    link_el = card.locator('a').first
-                    if await link_el.count() == 0: continue
+                    link_el = card.select_one('a')
+                    if not link_el:
+                        continue
                     
-                    # WWR links are relative
-                    relative_link = await link_el.get_attribute('href')
-                    if not relative_link or 'remote-jobs' not in relative_link: continue
+                    relative_link = link_el.get('href', '')
+                    if not relative_link or 'remote-jobs' not in relative_link:
+                        continue
                     
                     link = f"https://weworkremotely.com{relative_link}"
                     external_id = relative_link.split('/')[-1]
                     
-                    title_el = card.locator('span.title')
-                    company_el = card.locator('span.company')
+                    title_el = card.select_one('span.title')
+                    company_el = card.select_one('span.company')
                     
-                    title = await title_el.inner_text() if await title_el.count() > 0 else "No Title"
-                    company = await company_el.inner_text() if await company_el.count() > 0 else ""
+                    title = title_el.get_text(strip=True) if title_el else "No Title"
+                    company = company_el.get_text(strip=True) if company_el else ""
                     
-                    # Skip if empty title (some list items are dividers)
-                    if not title or title == "No Title": continue
-
-                    date_el = card.locator('span.date')
-                    date_posted = await date_el.inner_text() if await date_el.count() > 0 else ""
+                    if not title or title == "No Title":
+                        continue
+                    
+                    date_el = card.select_one('span.date')
+                    date_posted = date_el.get_text(strip=True) if date_el else ""
                     
                     job = {
                         "platform": "WeWorkRemotely",
                         "external_id": external_id,
-                        "title": f"{title} ({company})",
+                        "title": f"{title} ({company})" if company else title,
                         "url": link,
                         "budget": "See Job",
                         "description": f"Remote job at {company}. Posted: {date_posted}",
@@ -71,19 +69,14 @@ async def scrape_weworkremotely(query: str):
                     }
                     jobs.append(job)
                     
-                    # INCREASE LIMIT
-                    if len(jobs) >= 50: break
-                    
+                    if len(jobs) >= 50:
+                        break
+                        
                 except Exception as e:
-                    # print(f"[WWR] Error parsing card: {e}")
                     continue
-            
-            print(f"[WWR] Successfully extracted {len(jobs)} jobs")
                     
-        except Exception as e:
-            print(f"[WWR] 💥 Error: {e}")
-            
-        finally:
-            await browser.close()
-            
+    except Exception as e:
+        print(f"[WWR] 💥 Error: {e}")
+    
+    print(f"[WWR] Extracted {len(jobs)} jobs")
     return jobs

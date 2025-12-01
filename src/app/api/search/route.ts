@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 
-const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
+// Use relative URL for same-origin API calls on Vercel, or localhost for dev
+const getBackendUrl = () => {
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return process.env.BACKEND_URL || 'http://127.0.0.1:8000';
+};
+
+const backendUrl = getBackendUrl();
 
 // Helper to format jobs from backend
 function formatGigs(jobsData: any[], query: string) {
@@ -34,7 +42,7 @@ export async function GET(request: Request) {
       console.log(`[NextJS] Fast search for: ${query}`);
       
       // 1. First, get cached results from DB immediately (fast!)
-      const cachedRes = await fetch(`${backendUrl}/jobs?query=${encodeURIComponent(query)}&limit=${limit}&offset=0`);
+      const cachedRes = await fetch(`${backendUrl}/api/jobs?query=${encodeURIComponent(query)}&limit=${limit}&offset=0`);
       const cachedJobs = cachedRes.ok ? await cachedRes.json() : [];
       
       // 2. Fire off scrapers in background (don't await)
@@ -44,7 +52,7 @@ export async function GET(request: Request) {
       // Fire and forget - don't block the response
       Promise.all(
         allPlatforms.map(p =>
-          fetch(`${backendUrl}/scrape/${p}?query=${encodeURIComponent(query)}`)
+          fetch(`${backendUrl}/api/scrape/${p}?query=${encodeURIComponent(query)}`)
             .then(res => res.json())
             .then(data => console.log(`[NextJS] ${p} done: ${data.new_jobs_count} new`))
             .catch(err => console.log(`[NextJS] ${p} error: ${err.message}`))
@@ -62,7 +70,7 @@ export async function GET(request: Request) {
 
     // For subsequent pages, just fetch from DB
     console.log(`[NextJS] Fetching page ${page} (offset ${offset}) for: ${query}`);
-    const jobsRes = await fetch(`${backendUrl}/jobs?query=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`);
+    const jobsRes = await fetch(`${backendUrl}/api/jobs?query=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`);
 
     if (!jobsRes.ok) {
       throw new Error(`Backend responded with ${jobsRes.status}`);
