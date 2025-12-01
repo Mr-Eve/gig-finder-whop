@@ -1,5 +1,22 @@
 import { NextResponse } from "next/server";
 
+const backendUrl = 'http://127.0.0.1:8000';
+
+// Helper to format jobs from backend
+function formatGigs(jobsData: any[], query: string) {
+  return jobsData.map((job: any) => ({
+    id: job.id.toString(),
+    platform: job.platform,
+    external_id: job.external_id,
+    title: job.title,
+    description: job.description,
+    link: job.url,
+    budget: job.budget,
+    posted_at: job.posted_at,
+    tags: [job.platform.toLowerCase(), query]
+  }));
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = searchParams.get('q')?.toLowerCase() || '';
@@ -12,51 +29,50 @@ export async function GET(request: Request) {
   }
 
   try {
-    const backendUrl = 'http://127.0.0.1:8000';
-    
-    // If it's the first page, trigger a fresh scrape
+    // OPTIMIZATION: Return cached results IMMEDIATELY, trigger scrape in background
     if (page === 1) {
-        console.log(`[NextJS] Starting multi-platform search for: ${query}`);
-        const allPlatforms = ['freelancer', 'upwork', 'remoteok', 'weworkremotely'];
+      console.log(`[NextJS] Fast search for: ${query}`);
+      
+      // 1. First, get cached results from DB immediately (fast!)
+      const cachedRes = await fetch(`${backendUrl}/jobs?query=${encodeURIComponent(query)}&limit=${limit}&offset=0`);
+      const cachedJobs = cachedRes.ok ? await cachedRes.json() : [];
+      
+      // 2. Fire off scrapers in background (don't await)
+      const allPlatforms = ['freelancer', 'upwork', 'remoteok', 'weworkremotely'];
+      console.log(`[NextJS] Triggering background scrape for ${allPlatforms.length} platforms`);
+      
+      // Fire and forget - don't block the response
+      Promise.all(
+        allPlatforms.map(p =>
+          fetch(`${backendUrl}/scrape/${p}?query=${encodeURIComponent(query)}`)
+            .then(res => res.json())
+            .then(data => console.log(`[NextJS] ${p} done: ${data.new_jobs_count} new`))
+            .catch(err => console.log(`[NextJS] ${p} error: ${err.message}`))
+        )
+      );
 
-        const scrapePromises = allPlatforms.map(p => 
-            fetch(`${backendUrl}/scrape/${p}?query=${encodeURIComponent(query)}`)
-                .then(res => res.json())
-                .then(data => ({ platform: p, count: data.new_jobs_count, status: 'ok' }))
-                .catch(err => ({ platform: p, error: err.message, status: 'error' }))
-        );
-
-        const scrapeResults = await Promise.all(scrapePromises);
-        console.log("[NextJS] Scrape results:", scrapeResults);
-    } else {
-        console.log(`[NextJS] Fetching page ${page} (offset ${offset}) for: ${query}`);
+      // 3. Return cached results immediately
+      console.log(`[NextJS] Returning ${cachedJobs.length} cached results immediately`);
+      return NextResponse.json({ 
+        gigs: formatGigs(cachedJobs, query),
+        cached: true,
+        message: cachedJobs.length === 0 ? 'Searching platforms... refresh in a few seconds' : undefined
+      });
     }
 
-    // 2. Read from DB (Aggregated) with pagination
-    console.log(`[NextJS] Fetching aggregated jobs from DB (offset ${offset})`);
+    // For subsequent pages, just fetch from DB
+    console.log(`[NextJS] Fetching page ${page} (offset ${offset}) for: ${query}`);
     const jobsRes = await fetch(`${backendUrl}/jobs?query=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`);
-    
-    if (!jobsRes.ok) {
-       throw new Error(`Backend responded with ${jobsRes.status}`);
-    }
-    
-    const jobsData = await jobsRes.json();
-    console.log(`[NextJS] DB returned ${jobsData.length} total jobs`);
-    
-    const gigs = jobsData.map((job: any) => ({
-        id: job.id.toString(), 
-        platform: job.platform,
-        external_id: job.external_id,
-        title: job.title,
-        description: job.description,
-        link: job.url,
-        budget: job.budget,
-        posted_at: job.posted_at,
-        tags: [job.platform.toLowerCase(), query]
-    }));
 
-    return NextResponse.json({ gigs });
-    
+    if (!jobsRes.ok) {
+      throw new Error(`Backend responded with ${jobsRes.status}`);
+    }
+
+    const jobsData = await jobsRes.json();
+    console.log(`[NextJS] DB returned ${jobsData.length} jobs`);
+
+    return NextResponse.json({ gigs: formatGigs(jobsData, query) });
+
   } catch (error) {
     console.error("Search error:", error);
     return NextResponse.json({ error: "Failed to fetch gigs from backend" }, { status: 500 });

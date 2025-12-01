@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { usePostHog } from 'posthog-js/react';
+import Onboarding from '@/components/Onboarding';
 
 interface Gig {
   id: string;
@@ -15,6 +17,7 @@ interface Gig {
 type SortOption = 'date' | 'budget' | 'title';
 
 export default function ExperiencePage({ params }: { params: { slug: string } }) {
+  const posthog = usePostHog();
   const [searchQuery, setSearchQuery] = useState('');
   const [gigs, setGigs] = useState<Gig[]>([]);
   const [loading, setLoading] = useState(false);
@@ -23,6 +26,43 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [noMoreResults, setNoMoreResults] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showRefreshHint, setShowRefreshHint] = useState(false);
+
+  useEffect(() => {
+    // Check if user has completed onboarding
+    const hasOnboarded = localStorage.getItem('gig-finder-onboarded');
+    if (!hasOnboarded) {
+      setShowOnboarding(true);
+    }
+  }, []);
+
+  // Auto-refresh after initial search to get freshly scraped results
+  useEffect(() => {
+    if (showRefreshHint && searchQuery) {
+      const timer = setTimeout(async () => {
+        setIsRefreshing(true);
+        try {
+          const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&page=1&refresh=1`);
+          if (res.ok) {
+            const data = await res.json();
+            const newGigs = data.gigs || [];
+            if (newGigs.length > gigs.length) {
+              setGigs(newGigs);
+              if (newGigs.length < 50) setHasMore(false);
+            }
+          }
+        } catch (e) {
+          console.error('Auto-refresh failed:', e);
+        } finally {
+          setIsRefreshing(false);
+          setShowRefreshHint(false);
+        }
+      }, 4000); // Wait 4 seconds for scrapers to finish
+      return () => clearTimeout(timer);
+    }
+  }, [showRefreshHint, searchQuery]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,6 +71,10 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
     setPage(1);
     setHasMore(true);
     setNoMoreResults(false);
+    setShowRefreshHint(false);
+    
+    const searchStartTime = Date.now();
+    
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&page=1`);
       if (!res.ok) throw new Error('Search request failed');
@@ -39,11 +83,28 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
       const initialGigs = data.gigs || [];
       setGigs(initialGigs);
       
+      // Track search event
+      posthog?.capture('search_performed', {
+        query: searchQuery,
+        results_count: initialGigs.length,
+        response_time_ms: Date.now() - searchStartTime,
+        cached: data.cached || false,
+      });
+      
+      // If we got cached results, show refresh hint (scrapers running in background)
+      if (data.cached) {
+        setShowRefreshHint(true);
+      }
+      
       if (initialGigs.length < 50) {
           setHasMore(false);
       }
     } catch (error) {
       console.error('Failed to fetch gigs:', error);
+      posthog?.capture('search_error', {
+        query: searchQuery,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
     } finally {
       setLoading(false);
     }
@@ -63,6 +124,13 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
 
       const data = await res.json();
       const newGigs = data.gigs || [];
+      
+      // Track load more event
+      posthog?.capture('load_more_clicked', {
+        query: searchQuery,
+        page: nextPage,
+        new_results_count: newGigs.length,
+      });
       
       if (newGigs.length === 0) {
           setHasMore(false);
@@ -118,14 +186,18 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
   };
 
   return (
-    <div className="gig-page-container">
+    <>
+      {showOnboarding && (
+        <Onboarding onComplete={() => setShowOnboarding(false)} />
+      )}
+      <div className="gig-page-container">
       <div className="gig-content-wrapper">
         <header className="gig-header">
           <h1 className="gig-title">
             Find Your Next Gig
           </h1>
           <p className="gig-subtitle">
-            Search for opportunities that match your skills across multiple platforms.
+            Search top freelancing platforms for the latest offers.
           </p>
         </header>
 
@@ -160,7 +232,11 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
                 <select 
                     className="sort-select"
                     value={sortOption}
-                    onChange={(e) => setSortOption(e.target.value as SortOption)}
+                    onChange={(e) => {
+                      const newSort = e.target.value as SortOption;
+                      setSortOption(newSort);
+                      posthog?.capture('sort_changed', { sort_option: newSort });
+                    }}
                 >
                     <option value="date">Newest</option>
                     <option value="budget">Budget (High to Low)</option>
@@ -212,6 +288,15 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
                     target="_blank" 
                     rel="noopener noreferrer"
                     className="gig-view-link"
+                    onClick={() => {
+                      posthog?.capture('gig_clicked', {
+                        gig_id: gig.id,
+                        gig_title: gig.title,
+                        platform: gig.platform,
+                        budget: gig.budget,
+                        search_query: searchQuery,
+                      });
+                    }}
                 >
                     View Gig
                     <svg style={{ width: '1rem', height: '1rem', marginLeft: '0.25rem' }} fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
@@ -260,7 +345,15 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
             </div>
         )}
 
+        {isRefreshing && gigs.length > 0 && (
+            <div className="refresh-indicator">
+                <span className="refresh-spinner" />
+                <span>Fetching fresh results...</span>
+            </div>
+        )}
+
       </div>
     </div>
+    </>
   );
 }

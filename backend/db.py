@@ -20,6 +20,12 @@ def init_db():
             UNIQUE(platform, external_id)
         )
     ''')
+    
+    # OPTIMIZATION: Add indexes for faster queries
+    c.execute('CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_jobs_platform ON jobs(platform)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_jobs_title ON jobs(title)')
+    
     conn.commit()
     conn.close()
 
@@ -66,55 +72,17 @@ def get_jobs(query=None, limit=50, offset=0):
     sql = 'SELECT * FROM jobs'
     params = []
     
-    # IMPORTANT: Relaxed the filtering logic.
-    # Instead of enforcing title/desc check, we mostly rely on the fact that the USER just scraped.
-    # However, for persistent storage, we still want SOME relevance.
-    # But if the user types "paint" and Freelancer gives us "Watercolor", we WANT to see it.
-    # Freelancer's internal search is smarter than our SQL LIKE.
-    #
-    # Compromise: If query is provided, we try to filter, BUT if we find nothing (or very few),
-    # maybe we should return recent jobs anyway?
-    #
-    # Better approach for MVP: If the user is actively scraping, they probably want to see
-    # whatever was just added.
-    # Let's relax the filter to be very broad or just return recent jobs if query is short.
-    #
-    # Actually, let's just REMOVE the strict SQL filter if the user just did a scrape.
-    # But this function is stateless.
-    #
-    # Let's trust the scraper. The scraper puts relevant jobs in.
-    # We will return ALL jobs sorted by `created_at` (insertion time) descending.
-    # This effectively shows "What did I just find?" + older stuff.
-    # If the DB grows huge, this might show irrelevant stuff from previous "code" searches when you search "paint".
-    #
-    # So we KEEP the filter but make it smarter.
-    # Let's try to match individual words.
-    
     if query:
-        # Simple keyword matching: split by space, ensure at least ONE word matches
-        # This is looser than "exact phrase".
-        # keywords = query.split()
-        # conditions = []
-        # for word in keywords:
-        #     if len(word) > 2: # ignore 'is', 'a', 'in'
-        #         conditions.append(f"(title LIKE ? OR description LIKE ?)")
-        #         params.extend([f'%{word}%', f'%{word}%'])
+        # Split query into keywords and match any of them in title or description
+        keywords = [word.strip() for word in query.split() if len(word.strip()) > 2]
         
-        # if conditions:
-        #     sql += ' WHERE ' + ' OR '.join(conditions)
-        
-        # Actually, sticking to the strict filter is safer for correctness, BUT
-        # if the result count is low, it feels broken.
-        # Let's temporarily disable the filter to PROVE we have data, or rely on the frontend to filter?
-        # No, let's return everything for now to debug the "1 result" issue.
-        # If I search "paint" and get "python", I'll know why.
-        # Re-enabling standard filter but just trusting the user sees what they expect.
-        
-        # FIX: I will comment out the WHERE clause to show ALL recent jobs. 
-        # This confirms if the data exists. In a real app, we need full-text search (FTS5).
-        pass 
-        # sql += ' WHERE title LIKE ? OR description LIKE ?'
-        # params.extend([f'%{query}%', f'%{query}%'])
+        if keywords:
+            conditions = []
+            for word in keywords:
+                conditions.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
+                params.extend([f'%{word.lower()}%', f'%{word.lower()}%'])
+            
+            sql += ' WHERE ' + ' OR '.join(conditions)
     
     sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?'
     params.append(limit)
