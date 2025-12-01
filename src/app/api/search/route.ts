@@ -37,35 +37,46 @@ export async function GET(request: Request) {
   }
 
   try {
-    // OPTIMIZATION: Return cached results IMMEDIATELY, trigger scrape in background
     if (page === 1) {
-      console.log(`[NextJS] Fast search for: ${query}`);
+      console.log(`[NextJS] Searching for: ${query}`);
       
-      // 1. First, get cached results from DB immediately (fast!)
-      const cachedRes = await fetch(`${backendUrl}/api/jobs?query=${encodeURIComponent(query)}&limit=${limit}&offset=0`);
-      const cachedJobs = cachedRes.ok ? await cachedRes.json() : [];
+      // Run all scrapers in parallel and wait for results
+      const allPlatforms = ['freelancer', 'remoteok', 'weworkremotely'];
+      console.log(`[NextJS] Scraping ${allPlatforms.length} platforms...`);
       
-      // 2. Fire off scrapers in background (don't await)
-      const allPlatforms = ['freelancer', 'upwork', 'remoteok', 'weworkremotely'];
-      console.log(`[NextJS] Triggering background scrape for ${allPlatforms.length} platforms`);
-      
-      // Fire and forget - don't block the response
-      Promise.all(
+      const scrapeResults = await Promise.all(
         allPlatforms.map(p =>
           fetch(`${backendUrl}/api/scrape/${p}?query=${encodeURIComponent(query)}`)
             .then(res => res.json())
-            .then(data => console.log(`[NextJS] ${p} done: ${data.new_jobs_count} new`))
-            .catch(err => console.log(`[NextJS] ${p} error: ${err.message}`))
+            .then(data => {
+              console.log(`[NextJS] ${p} done: ${data.new_jobs_count} jobs`);
+              return data.jobs || [];
+            })
+            .catch(err => {
+              console.log(`[NextJS] ${p} error: ${err.message}`);
+              return [];
+            })
         )
       );
 
-      // 3. Return cached results immediately
-      console.log(`[NextJS] Returning ${cachedJobs.length} cached results immediately`);
-      return NextResponse.json({ 
-        gigs: formatGigs(cachedJobs, query),
-        cached: true,
-        message: cachedJobs.length === 0 ? 'Searching platforms... refresh in a few seconds' : undefined
-      });
+      // Flatten all results
+      const allJobs = scrapeResults.flat();
+      console.log(`[NextJS] Total jobs found: ${allJobs.length}`);
+
+      // Format and return
+      const gigs = allJobs.map((job: any) => ({
+        id: job.external_id || job.id?.toString() || Math.random().toString(),
+        platform: job.platform,
+        external_id: job.external_id,
+        title: job.title,
+        description: job.description,
+        link: job.url,
+        budget: job.budget,
+        posted_at: job.posted_at,
+        tags: [job.platform?.toLowerCase(), query]
+      }));
+
+      return NextResponse.json({ gigs });
     }
 
     // For subsequent pages, just fetch from DB
