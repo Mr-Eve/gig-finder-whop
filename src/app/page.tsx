@@ -47,7 +47,7 @@ export default function Home() {
             Hire talent for your next project.
           </p>
         </div>
-      </div>
-    </main>
+        </div>
+      </main>
   );
 }
