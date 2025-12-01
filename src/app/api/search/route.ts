@@ -63,8 +63,19 @@ export async function GET(request: Request) {
       const allJobs = scrapeResults.flat();
       console.log(`[NextJS] Total jobs found: ${allJobs.length}`);
 
+      // Filter jobs to only include those matching the query
+      const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+      const filteredJobs = allJobs.filter((job: any) => {
+        const title = (job.title || '').toLowerCase();
+        const description = (job.description || '').toLowerCase();
+        // Job must contain at least one query word in title or description
+        return queryWords.some(word => title.includes(word) || description.includes(word));
+      });
+      
+      console.log(`[NextJS] After filtering: ${filteredJobs.length} relevant jobs`);
+
       // Format and return
-      const gigs = allJobs.map((job: any) => ({
+      const gigs = filteredJobs.map((job: any) => ({
         id: job.external_id || job.id?.toString() || Math.random().toString(),
         platform: job.platform,
         external_id: job.external_id,
