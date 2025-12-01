@@ -329,7 +329,7 @@ export default function ExperiencePage({ params }: { params: { slug: string } })
         {!loading && searchQuery && gigs.length === 0 && (
             <div className="error-state">
                 <p>
-                No gigs found. Try a different search term.
+
                 </p>
             </div>
         )}
